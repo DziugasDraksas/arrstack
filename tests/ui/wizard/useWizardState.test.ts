@@ -383,6 +383,14 @@ describe("buildStateFromWizard", () => {
     expect(state.services_enabled).not.toContain("deunhealth");
   });
 
+  test("enabling bazarr no longer auto-adds opensubtitles-scraper", () => {
+    const state = buildStateFromWizard(
+      makeWizardState({ services: [{ id: "bazarr", name: "Bazarr+", checked: true }] })
+    );
+    expect(state.services_enabled).not.toContain("opensubtitles-scraper");
+    expect(state.services_enabled).toContain("flaresolverr"); // still bundled
+  });
+
   test("installer_version is a non-empty string", () => {
     const state = buildStateFromWizard(makeWizardState());
     expect(typeof state.installer_version).toBe("string");

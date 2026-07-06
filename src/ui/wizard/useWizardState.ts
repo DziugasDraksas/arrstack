@@ -105,7 +105,7 @@ export function buildStateFromWizard(
 
   // Bazarr+ bundle: when bazarr is checked, auto-add its dependencies
   if (enabledIds.includes("bazarr")) {
-    for (const dep of ["flaresolverr", "opensubtitles-scraper", "ai-subtitle-translator"]) {
+    for (const dep of ["flaresolverr", "ai-subtitle-translator"]) {
       if (!enabledIds.includes(dep)) enabledIds.push(dep);
     }
   }
@@ -225,10 +225,10 @@ function readExistingAdminPassword(installDir: string): string | null {
 
 // Services managed automatically by the installer, hidden from the user grid
 // Infrastructure: caddy, ddns containers, dnsmasq
-// Bazarr+ deps: flaresolverr, opensubtitles-scraper, ai-subtitle-translator (bundled with Bazarr+)
+// Bazarr+ deps: flaresolverr, ai-subtitle-translator (bundled with Bazarr+)
 const AUTO_MANAGED_SERVICES = new Set([
   "caddy", "cloudflare-ddns", "duckdns-updater", "dnsmasq", "deunhealth",
-  "flaresolverr", "opensubtitles-scraper", "ai-subtitle-translator",
+  "flaresolverr", "ai-subtitle-translator",
 ]);
 
 function buildInitialServices(existingEnabled?: string[]): WizardServiceItem[] {
