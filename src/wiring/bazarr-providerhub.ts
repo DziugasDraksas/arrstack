@@ -47,6 +47,11 @@ interface CatalogEntry {
 // Per-request timeout so a wedged Bazarr+ (accepts the socket but never answers)
 // cannot hang an unattended install/update. Bun's fetch has no default timeout.
 const REQ_TIMEOUT_MS = 15_000;
+// POST /installations blocks while the Hub downloads the provider bundle and
+// builds its isolated venv, which for heavy providers (e.g. opensubtitles pulls
+// ai-cloudscraper) takes well over REQ_TIMEOUT_MS. Give it a generous cap so it
+// isn't falsely reported as failed (which would also skip its enable+config).
+const INSTALL_TIMEOUT_MS = 180_000;
 
 export async function configureBazarrProviderHub(opts: ProviderHubOptions): Promise<void> {
   const base = opts.base ?? "http://localhost:6767";
@@ -87,7 +92,7 @@ export async function configureBazarrProviderHub(opts: ProviderHubOptions): Prom
           method: "POST",
           headers,
           body: JSON.stringify({ manifest }),
-          signal: AbortSignal.timeout(REQ_TIMEOUT_MS),
+          signal: AbortSignal.timeout(INSTALL_TIMEOUT_MS),
         });
         if (!res.ok) throw new Error(`install returned ${res.status}`);
         await waitForInstalled(base, headers, target.id, timeoutMs, intervalMs);
