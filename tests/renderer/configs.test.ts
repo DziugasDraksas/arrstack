@@ -60,11 +60,19 @@ describe("bazarr config.yaml", () => {
     expect(output).toContain("port: 7878");
   });
 
-  test("enabled subtitle providers are listed", () => {
+  test("enabled subtitle providers are the migrated set (no podnapisi)", () => {
     const output = renderBazarrConfig(opts);
     expect(output).toContain("opensubtitles");
-    expect(output).toContain("podnapisi");
     expect(output).toContain("embeddedsubtitles");
+    expect(output).toContain("yifysubtitles");
+    // podnapisi is dead and not in the Provider Hub catalog; dropped.
+    expect(output).not.toContain("podnapisi");
+  });
+
+  test("config drops the standalone opensubtitles scraper block", () => {
+    const output = renderBazarrConfig(opts);
+    expect(output).not.toContain("scraper_service_url");
+    expect(output).not.toContain("use_web_scraper");
   });
 
   test("AI translator encryption key is written so it matches the .env", () => {
