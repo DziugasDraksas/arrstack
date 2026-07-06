@@ -166,7 +166,20 @@ async function regenerateInstallerConfig(
   state: State,
   log: (line: string) => void
 ): Promise<void> {
-  const services = getServicesByIds(state.services_enabled);
+  // Existing VPN installs from before the reboot fix don't list deunhealth in
+  // services_enabled. Inject it here so `arrstack update` deploys the sidecar
+  // that auto-restarts qBittorrent after a reboot (otherwise qbit would carry
+  // the restart label but have no watcher). Idempotent: skipped if present.
+  const enabledIds = [...state.services_enabled];
+  if (
+    state.vpn.enabled &&
+    enabledIds.includes("qbittorrent") &&
+    !enabledIds.includes("deunhealth")
+  ) {
+    enabledIds.push("deunhealth");
+    log("[update]   adding deunhealth sidecar (auto-restarts qBittorrent after a reboot)");
+  }
+  const services = getServicesByIds(enabledIds);
 
   const composePath = join(installDir, "docker-compose.yml");
 

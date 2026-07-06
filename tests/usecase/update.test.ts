@@ -142,6 +142,35 @@ test("runUpdate logs warning and continues when a service health check fails", a
   expect(contents).toContain("did not become healthy");
 });
 
+test("runUpdate injects the deunhealth sidecar into an existing VPN install's compose", async () => {
+  // Simulates a v1.1.0 VPN install whose state.json predates the reboot fix:
+  // services_enabled has qbittorrent + gluetun but no deunhealth. `arrstack
+  // update` must add the watcher so existing users get the fix without a fresh
+  // install. mullvad + a real key means resolveVpnWireguardKey makes no API call.
+  const dir = makeInstallDir(true, false);
+  writeState(dir, {
+    ...VALID_STATE,
+    install_dir: dir,
+    services_enabled: ["gluetun", "qbittorrent", "sonarr"],
+    vpn: {
+      enabled: true,
+      provider: "mullvad",
+      type: "wireguard",
+      private_key: "KEY==",
+      addresses: "10.0.0.2/32",
+    },
+  });
+  const { deps } = makeDeps();
+
+  await silently(() => runUpdate(dir, deps));
+
+  const compose = readFileSync(join(dir, "docker-compose.yml"), "utf-8");
+  expect(compose).toContain("deunhealth:");
+  expect(compose).toContain("deunhealth.restart.on.unhealthy=true");
+  const logTxt = readFileSync(join(dir, "update.log"), "utf-8");
+  expect(logTxt).toContain("adding deunhealth sidecar");
+});
+
 test("runUpdate summary reports changed service images", async () => {
   const dir = makeInstallDir();
   let captureCount = 0;

@@ -1,5 +1,33 @@
 import { test, expect, describe, afterEach } from "bun:test";
 import { checkPortFree } from "../../src/platform/ports.js";
+import { checkNotRoot } from "../../src/platform/preflight.js";
+
+describe("checkNotRoot", () => {
+  const origGetuid = process.getuid;
+  afterEach(() => {
+    // @ts-expect-error restore original (may be undefined on some platforms)
+    process.getuid = origGetuid;
+  });
+
+  test("passes as a normal user (non-zero uid)", () => {
+    // @ts-expect-error stub
+    process.getuid = () => 1000;
+    const r = checkNotRoot();
+    expect(r.ok).toBe(true);
+    expect(r.blocking).toBe(false);
+    expect(r.name).toBe("Not running as root");
+  });
+
+  test("fails (warning) when uid is 0, and never blocks", () => {
+    // @ts-expect-error stub
+    process.getuid = () => 0;
+    const r = checkNotRoot();
+    expect(r.ok).toBe(false);
+    // A root warning must never hard-block the install.
+    expect(r.blocking).toBe(false);
+    expect(r.message.toLowerCase()).toContain("root");
+  });
+});
 
 describe("checkPortFree", () => {
   const servers: ReturnType<typeof Bun.serve>[] = [];

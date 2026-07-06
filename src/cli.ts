@@ -4,7 +4,7 @@ import { VERSION } from "./version.js";
 import { render } from "ink";
 import React from "react";
 import { App } from "./ui/App.js";
-import { readState } from "./state/store.js";
+import { readState, adminTxtUnreadable } from "./state/store.js";
 import { runDoctor } from "./usecase/doctor.js";
 import { runUpdate } from "./usecase/update.js";
 import { showPassword } from "./usecase/show-password.js";
@@ -49,6 +49,19 @@ program
       for (const path of removed) {
         console.log(`Removed: ${path}`);
       }
+    }
+    // A previous `sudo` install can leave admin.txt root-owned; a later
+    // non-sudo run then can't read it, would generate a NEW admin password,
+    // rewrite qBittorrent.conf, and lock the user out of the still-running qbit
+    // container. Stop early with a fix instead of silently rotating.
+    if (!opts.fresh && adminTxtUnreadable(installDir)) {
+      const adminTxt = join(installDir, "admin.txt");
+      console.error(
+        `\nCannot read ${adminTxt}. It looks like a previous 'sudo arrstack install' left it owned by root.\n` +
+          `Fix ownership and re-run as your normal user (not sudo):\n` +
+          `  sudo chown $(id -u):$(id -g) ${adminTxt}\n`
+      );
+      process.exit(1);
     }
     const existing = opts.fresh ? null : readState(installDir);
     const { waitUntilExit } = render(React.createElement(App, { existingState: existing }));

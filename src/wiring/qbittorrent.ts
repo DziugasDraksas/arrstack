@@ -80,6 +80,14 @@ export async function configureQbit(
     max_ratio_enabled: false,
     max_seeding_time_enabled: false,
     utp_rate_limited: true,
+    // Disable the OS disk cache. qBittorrent 5.x ships on libtorrent 2.0, which
+    // does disk I/O via memory-mapped files; Linux counts the page-cache pages
+    // backing those mmaps against the container's RSS, so "memory use" climbs
+    // to many GB when seeding lots of data and can OOM a small Docker VM.
+    // Bypassing the OS cache keeps qBittorrent's footprint bounded (the single
+    // most effective lever for this; the old `disk_cache` knob is a no-op on
+    // libtorrent 2.0). Trades a little throughput for predictable RAM.
+    enable_os_cache: false,
   };
 
   const prefsRes = await fetch(`${base}/api/v2/app/setPreferences`, {

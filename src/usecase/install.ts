@@ -170,9 +170,17 @@ export async function runInstall(
   let pbkdf2Hash = "";
   let bazarrHash = "";
   let hostIp = "localhost";
-  // Generated once, shared between the .env (-> ai-subtitle-translator) and
-  // Bazarr's config.yaml so AES-GCM encryption between the two matches.
-  const translatorEncryptionKey = randomBytes(32).toString("hex");
+  // Long-lived secrets: reuse whatever a prior install persisted so a
+  // reconfigure/resume does NOT rotate them. The AES-GCM key is shared between
+  // the .env (-> ai-subtitle-translator) and Bazarr's config.yaml so their
+  // encryption matches (rotating it orphans data encrypted at rest); the Flask
+  // secret backs Bazarr's sessions. Both are written back into state.json below.
+  const secrets: State["secrets"] = { ...(state.secrets ?? {}) };
+  const translatorEncryptionKey =
+    secrets.translator_encryption_key ?? randomBytes(32).toString("hex");
+  secrets.translator_encryption_key = translatorEncryptionKey;
+  const bazarrFlaskSecret = secrets.bazarr_flask_secret ?? generateApiKey();
+  secrets.bazarr_flask_secret = bazarrFlaskSecret;
 
   // Step 1: Create storage layout (primary root + tv/movies subdirs inside each
   // extra path so reconfigures that add drives also get their layout).
@@ -313,7 +321,7 @@ export async function runInstall(
         username: state.admin.username,
         passwordHash: bazarrHash,
         bazarrApiKey: apiKeys["bazarr"],
-        flaskSecretKey: generateApiKey(),
+        flaskSecretKey: bazarrFlaskSecret,
         sonarrApiKey: apiKeys["sonarr"] ?? "",
         radarrApiKey: apiKeys["radarr"] ?? "",
         translatorEncryptionKey,
@@ -384,6 +392,7 @@ export async function runInstall(
     writeState(installDir, {
       ...state,
       api_keys: apiKeys,
+      secrets,
       install_started_at: installStartedAt,
     });
     // Persist the admin password early (mode 600). state.json never stores it,
@@ -661,6 +670,7 @@ export async function runInstall(
     const finalState: State = {
       ...state,
       api_keys: apiKeys,
+      secrets,
       install_started_at: installStartedAt,
       install_completed_at: new Date().toISOString(),
       last_updated_at: new Date().toISOString(),

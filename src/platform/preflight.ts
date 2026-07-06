@@ -9,6 +9,24 @@ export interface CheckResult {
   blocking: boolean;
 }
 
+// Running the installer as root makes every LinuxServer.io container run as
+// root (PUID/PGID 0), which breaks them ("usermod: user abc is currently used
+// by process 1") and litters root-owned files. Non-blocking: some users only
+// have root, and the wizard now clamps PUID/PGID away from 0 regardless, so
+// this is a warning rather than a hard stop.
+export function checkNotRoot(): CheckResult {
+  const uid = typeof process.getuid === "function" ? process.getuid() : -1;
+  const isRoot = uid === 0;
+  return {
+    name: "Not running as root",
+    ok: !isRoot,
+    message: isRoot
+      ? "Running as root. LinuxServer.io containers misbehave as root; re-run as a normal user in the 'docker' group (PUID/PGID default to 1000)."
+      : "Running as a normal user",
+    blocking: false,
+  };
+}
+
 async function checkDiskSpace(path: string, minGb: number): Promise<CheckResult> {
   const result = await exec(["df", "-Pk", path], { timeoutMs: 5000 });
   const name = `Disk space on ${path}`;
@@ -50,6 +68,9 @@ export async function runPreflight(
   opts: PreflightOptions = {}
 ): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
+
+  // 0. Not running as root (warning only, non-blocking)
+  results.push(checkNotRoot());
 
   // 1. Docker installed
   const dockerInstalled = await isDockerInstalled();

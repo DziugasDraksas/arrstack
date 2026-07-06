@@ -74,11 +74,15 @@ export interface WizardState {
   // Status (for status strip)
   dockerOk: boolean;
   portsOk: boolean;
+  isRoot: boolean; // installer running as root -> PUID/PGID footgun warning
   diskInfo: Array<{ path: string; freeGb: number }>;
   portConflicts: string[]; // human-readable conflict messages
 }
 
-export function buildStateFromWizard(ws: WizardState): State {
+export function buildStateFromWizard(
+  ws: WizardState,
+  existing?: Partial<State> | null,
+): State {
   const catalog = loadCatalog();
   const enabledIds = ws.services.filter((s) => s.checked).map((s) => s.id);
 
@@ -88,6 +92,16 @@ export function buildStateFromWizard(ws: WizardState): State {
   if (ws.remoteMode === "duckdns") enabledIds.push("duckdns-updater");
   if (ws.localDnsEnabled && ws.localDnsInstallDnsmasq) enabledIds.push("dnsmasq");
   if (ws.vpnMode === "gluetun" && !enabledIds.includes("gluetun")) enabledIds.push("gluetun");
+  // deunhealth restarts the VPN-routed qBittorrent when it goes unhealthy after
+  // a reboot (Docker ignores depends_on ordering on daemon restart). Only
+  // needed when qbit actually runs inside gluetun's netns.
+  if (
+    ws.vpnMode === "gluetun" &&
+    enabledIds.includes("qbittorrent") &&
+    !enabledIds.includes("deunhealth")
+  ) {
+    enabledIds.push("deunhealth");
+  }
 
   // Bazarr+ bundle: when bazarr is checked, auto-add its dependencies
   if (enabledIds.includes("bazarr")) {
@@ -101,10 +115,16 @@ export function buildStateFromWizard(ws: WizardState): State {
     .map((p) => p.trim())
     .filter(Boolean);
 
-  const apiKeys: Record<string, string> = {};
+  // Reuse every api key persisted from a prior install/attempt, then generate
+  // one only for a service that declares apiKeyEnv and doesn't have one yet.
+  // Regenerating on reconfigure would rotate keys out from under running
+  // containers and break cross-service references (Prowlarr->arr, Jellyseerr,
+  // Bazarr) that still hold the old value. Bazarr's key has no apiKeyEnv and is
+  // minted in install.ts, but it lives in api_keys too so this carries it over.
+  const apiKeys: Record<string, string> = { ...(existing?.api_keys ?? {}) };
   for (const id of enabledIds) {
     const svc = catalog.find((s) => s.id === id);
-    if (svc?.apiKeyEnv) {
+    if (svc?.apiKeyEnv && !apiKeys[id]) {
       apiKeys[id] = generateApiKey();
     }
   }
@@ -176,6 +196,10 @@ export function buildStateFromWizard(ws: WizardState): State {
       .map((s) => s.trim().toLowerCase())
       .filter((s) => /^[a-z]{2}$/.test(s)),
     api_keys: apiKeys,
+    // Carry persisted long-lived secrets forward so reconfigure/resume doesn't
+    // rotate the Bazarr/translator AES key or the Flask secret. install.ts
+    // fills these on first run and writes them back.
+    secrets: existing?.secrets ?? {},
   };
 }
 
@@ -203,7 +227,7 @@ function readExistingAdminPassword(installDir: string): string | null {
 // Infrastructure: caddy, ddns containers, dnsmasq
 // Bazarr+ deps: flaresolverr, opensubtitles-scraper, ai-subtitle-translator (bundled with Bazarr+)
 const AUTO_MANAGED_SERVICES = new Set([
-  "caddy", "cloudflare-ddns", "duckdns-updater", "dnsmasq",
+  "caddy", "cloudflare-ddns", "duckdns-updater", "dnsmasq", "deunhealth",
   "flaresolverr", "opensubtitles-scraper", "ai-subtitle-translator",
 ]);
 
@@ -223,12 +247,27 @@ function buildInitialServices(existingEnabled?: string[]): WizardServiceItem[] {
     }));
 }
 
+/**
+ * PUID/PGID must never be 0. Running the installer as root makes getuid()/
+ * getgid() return 0, but LinuxServer.io containers break when run as root, so
+ * fall back to the conventional 1000. Also used to sanitize a persisted 0 left
+ * behind by an installer run under an older version that didn't clamp.
+ */
+export function safeSystemId(raw: number | undefined): number {
+  return raw === undefined || raw === 0 ? 1000 : raw;
+}
+
 export function useWizardState(existingState?: Partial<State> | null) {
   const timezone = detectTimezone();
-  const puid =
-    typeof process.getuid === "function" ? process.getuid() : 1000;
-  const pgid =
-    typeof process.getgid === "function" ? process.getgid() : 1000;
+  // Never default PUID/PGID to 0. Under sudo/as root, getuid()/getgid() return
+  // 0, but LinuxServer.io images break when run as root ("usermod: user abc is
+  // currently used by process 1") and write root-owned config/media. Fall back
+  // to the conventional 1000; config dirs are chowned to this PUID anyway.
+  const rawUid = typeof process.getuid === "function" ? process.getuid() : 1000;
+  const rawGid = typeof process.getgid === "function" ? process.getgid() : 1000;
+  const puid = safeSystemId(rawUid);
+  const pgid = safeSystemId(rawGid);
+  const isRoot = rawUid === 0;
 
   const defaultStorageRoot = `${process.env.HOME ?? "."}/arrstack/data`;
   const [storageRoot, setStorageRoot] = useState(
@@ -294,8 +333,13 @@ export function useWizardState(existingState?: Partial<State> | null) {
   );
 
   const [tz, setTz] = useState(existingState?.timezone ?? timezone);
-  const [puidState, setPuid] = useState(existingState?.puid ?? puid);
-  const [pgidState, setPgid] = useState(existingState?.pgid ?? pgid);
+  // Reuse a persisted id on resume, but ignore a 0 left by an older root run.
+  const [puidState, setPuid] = useState(
+    existingState?.puid && existingState.puid !== 0 ? existingState.puid : puid,
+  );
+  const [pgidState, setPgid] = useState(
+    existingState?.pgid && existingState.pgid !== 0 ? existingState.pgid : pgid,
+  );
   const [vpnMode, setVpnMode] = useState<WizardState["vpnMode"]>(() => {
     // vpn.enabled is what controls whether we route qbittorrent through
     // gluetun; provider now holds a real VPN service name (mullvad, etc.),
@@ -474,10 +518,11 @@ export function useWizardState(existingState?: Partial<State> | null) {
       caddyHttpsPort,
       dockerOk,
       portsOk,
+      isRoot,
       diskInfo,
       portConflicts,
     };
-    return buildStateFromWizard(ws);
+    return buildStateFromWizard(ws, existingState);
   }
 
   return {
@@ -556,6 +601,7 @@ export function useWizardState(existingState?: Partial<State> | null) {
     // Status
     dockerOk,
     portsOk,
+    isRoot,
     diskInfo,
     portConflicts,
 
