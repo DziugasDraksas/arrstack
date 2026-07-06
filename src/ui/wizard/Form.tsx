@@ -427,6 +427,7 @@ export function Form({ initial, isReconfigure, onSubmit, onCancel }: FormProps) 
           diskInfo={ws.diskInfo}
           dockerOk={ws.dockerOk}
           portsOk={ws.portsOk}
+          isRoot={ws.isRoot}
           gpuName={ws.detectedGpus.find((g) => g.vendor === ws.gpuVendor)?.name}
           caddyHttpPort={ws.caddyHttpPort}
           caddyHttpsPort={ws.caddyHttpsPort}

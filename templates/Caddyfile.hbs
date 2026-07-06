@@ -57,3 +57,15 @@ http://{{id}}.{{../localDnsTld}} {
 	}
 }
 {{/if}}
+{{#unless localDnsEnabled}}{{#if (eq mode "none")}}
+# LAN-only with no hostname routing: there are no vhosts to reverse-proxy.
+# Without at least one site block the Caddyfile renders to zero bytes, and
+# `caddy run` exits with "adapting config: EOF" (code 1); under
+# restart: unless-stopped that becomes a permanent crash-loop. Emit a tiny
+# always-valid site so Caddy has a parseable config, keeps a listener on :80
+# (so its healthcheck passes), and stays up. Services are still reached
+# directly on their own host ports; this block just serves a hint.
+:80 {
+	respond "arrstack is running. No reverse-proxy is configured (LAN-only, no local DNS), so reach each service directly on its host port." 200
+}
+{{/if}}{{/unless}}

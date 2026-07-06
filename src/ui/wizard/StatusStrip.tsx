@@ -7,13 +7,14 @@ interface StatusStripProps {
   diskInfo: Array<{ path: string; freeGb: number }>;
   dockerOk: boolean;
   portsOk: boolean;
+  isRoot?: boolean;
   gpuName?: string;
   caddyHttpPort?: number;
   caddyHttpsPort?: number;
   portConflicts?: string[];
 }
 
-export function StatusStrip({ diskInfo, dockerOk, portsOk, gpuName, caddyHttpPort, caddyHttpsPort, portConflicts }: StatusStripProps) {
+export function StatusStrip({ diskInfo, dockerOk, portsOk, isRoot, gpuName, caddyHttpPort, caddyHttpsPort, portConflicts }: StatusStripProps) {
   const caddyNote = (!portsOk && caddyHttpPort && caddyHttpsPort)
     ? `Caddy:${caddyHttpPort}/${caddyHttpsPort}`
     : portsOk ? "80/443:free" : "80/443:in use";
@@ -30,6 +31,11 @@ export function StatusStrip({ diskInfo, dockerOk, portsOk, gpuName, caddyHttpPor
       </Text>
       {portConflicts && portConflicts.length > 0 && (
         <Text color="yellow">Port remaps: {portConflicts.join(", ")}</Text>
+      )}
+      {isRoot && (
+        <Text color="yellow">
+          ⚠ Running as root: containers will use PUID/PGID 1000, not 0. Prefer running as a normal user in the 'docker' group.
+        </Text>
       )}
     </Box>
   );

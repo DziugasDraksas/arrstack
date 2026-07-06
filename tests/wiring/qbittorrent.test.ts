@@ -67,4 +67,25 @@ describe("configureQbit login handling (qBittorrent 5.x)", () => {
       /incorrect username or password/,
     );
   });
+
+  test("sends enable_os_cache:false to bound libtorrent-2.0 RAM growth", async () => {
+    let prefsJson: any = null;
+    globalThis.fetch = (async (url: any, init: any) => {
+      const u = String(url);
+      if (u.endsWith("/auth/login")) {
+        return new Response("", {
+          status: 204,
+          headers: { "set-cookie": "QBT_SID_8080=c; path=/" },
+        });
+      }
+      if (u.includes("setPreferences")) {
+        const body = new URLSearchParams(String(init?.body));
+        prefsJson = JSON.parse(body.get("json") ?? "{}");
+      }
+      return new Response("Ok.", { status: 200 });
+    }) as any;
+    await configureQbit("admin", "pw", "http://qbit.test");
+    expect(prefsJson).not.toBeNull();
+    expect(prefsJson.enable_os_cache).toBe(false);
+  });
 });

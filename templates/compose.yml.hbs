@@ -26,6 +26,12 @@ services:
       retries: {{healthcheck.retries}}
       start_period: {{healthcheck.start_period}}
 {{/if}}
+{{#if labels}}
+    labels:
+{{#each labels}}
+      - "{{this}}"
+{{/each}}
+{{/if}}
 {{#if vpnNetwork}}
     network_mode: "service:gluetun"
 {{else}}

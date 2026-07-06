@@ -5,10 +5,29 @@ import { getServicesByIds } from "../../src/catalog";
 const services = getServicesByIds(["sonarr", "radarr", "jellyfin"]);
 
 describe("renderCaddyfile", () => {
-  test("LAN mode without local DNS emits an empty Caddyfile (direct IP access)", () => {
+  test("LAN mode without local DNS emits a minimal :80 site, not an empty file", () => {
     const output = renderCaddyfile(services, { mode: "none" });
+    // There are no vhosts to reverse-proxy and no cert to issue...
     expect(output).not.toContain("reverse_proxy");
     expect(output).not.toContain("tls {");
+    // ...but the file must NOT be empty: a zero-byte Caddyfile makes
+    // `caddy run` exit with "adapting config: EOF" and crash-loop under
+    // restart: unless-stopped. A tiny always-valid :80 site keeps it up.
+    expect(output.trim().length).toBeGreaterThan(0);
+    expect(output).toContain(":80 {");
+    expect(output).toContain("respond ");
+  });
+
+  test("the :80 fallback appears ONLY when there are no vhosts", () => {
+    // With local DNS the http vhosts are the config, so no fallback needed.
+    const withDns = renderCaddyfile(services, {
+      mode: "none",
+      localDns: { enabled: true, tld: "arrstack.local" },
+    });
+    expect(withDns).not.toContain(":80 {");
+    // In remote modes the wildcard block is the config, so no fallback.
+    const remote = renderCaddyfile(services, { mode: "duckdns", domain: "x.duckdns.org" });
+    expect(remote).not.toContain(":80 {");
   });
 
   test("LAN mode WITH local DNS emits hostname vhosts on HTTP", () => {

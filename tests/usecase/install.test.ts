@@ -1,5 +1,8 @@
-import { describe, test, expect } from "bun:test";
-import { getHostIp } from "../../src/usecase/install.js";
+import { describe, test, expect, afterEach } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { getHostIp, readSecretFromFile } from "../../src/usecase/install.js";
 import type { StepUpdate } from "../../src/usecase/install.js";
 
 // Import the unexported runStep via a local re-implementation for isolation
@@ -34,6 +37,67 @@ async function callStep(
   }
   return { updates, threw };
 }
+
+describe("readSecretFromFile (legacy secret migration)", () => {
+  let dir = "";
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    dir = "";
+  });
+
+  test("recovers ENCRYPTION_KEY from an existing .env so an upgrade doesn't rotate it", () => {
+    dir = mkdtempSync(join(tmpdir(), "arrstack-secret-"));
+    writeFileSync(join(dir, ".env"), "PUID=1000\nENCRYPTION_KEY=deadbeefcafe1234\nTZ=UTC\n");
+    expect(readSecretFromFile(join(dir, ".env"), /^ENCRYPTION_KEY=(.+)$/m)).toBe(
+      "deadbeefcafe1234",
+    );
+  });
+
+  const FLASK_RE = /^\s*flask_secret_key:[ \t]*["']?([^"'\s]+)["']?\s*$/m;
+
+  test("recovers flask_secret_key from an existing Bazarr config.yaml", () => {
+    dir = mkdtempSync(join(tmpdir(), "arrstack-secret-"));
+    const cfg = join(dir, "config", "bazarr", "config");
+    mkdirSync(cfg, { recursive: true });
+    writeFileSync(join(cfg, "config.yaml"), "general:\n  flask_secret_key: abc123secret\n  ip: '*'\n");
+    expect(readSecretFromFile(join(cfg, "config.yaml"), FLASK_RE)).toBe("abc123secret");
+  });
+
+  test("strips surrounding quotes if Bazarr re-serializes the flask secret quoted", () => {
+    dir = mkdtempSync(join(tmpdir(), "arrstack-secret-"));
+    const cfg = join(dir, "config", "bazarr", "config");
+    mkdirSync(cfg, { recursive: true });
+    writeFileSync(join(cfg, "config.yaml"), "general:\n  flask_secret_key: 'deadbeef99'\n");
+    expect(readSecretFromFile(join(cfg, "config.yaml"), FLASK_RE)).toBe("deadbeef99");
+  });
+
+  test("does NOT capture the next line when the flask secret is empty (falls through to generate)", () => {
+    dir = mkdtempSync(join(tmpdir(), "arrstack-secret-"));
+    const cfg = join(dir, "config", "bazarr", "config");
+    mkdirSync(cfg, { recursive: true });
+    writeFileSync(join(cfg, "config.yaml"), "general:\n  flask_secret_key:\n  ip: '*'\n");
+    expect(readSecretFromFile(join(cfg, "config.yaml"), FLASK_RE)).toBeUndefined();
+  });
+
+  test("ignores a commented-out flask_secret_key line", () => {
+    dir = mkdtempSync(join(tmpdir(), "arrstack-secret-"));
+    const cfg = join(dir, "config", "bazarr", "config");
+    mkdirSync(cfg, { recursive: true });
+    writeFileSync(join(cfg, "config.yaml"), "general:\n  # flask_secret_key: OLDVALUE\n  flask_secret_key: realkey42\n");
+    expect(readSecretFromFile(join(cfg, "config.yaml"), FLASK_RE)).toBe("realkey42");
+  });
+
+  test("returns undefined when the file is missing (fresh install)", () => {
+    dir = mkdtempSync(join(tmpdir(), "arrstack-secret-"));
+    expect(readSecretFromFile(join(dir, ".env"), /^ENCRYPTION_KEY=(.+)$/m)).toBeUndefined();
+  });
+
+  test("returns undefined when the pattern doesn't match", () => {
+    dir = mkdtempSync(join(tmpdir(), "arrstack-secret-"));
+    writeFileSync(join(dir, ".env"), "PUID=1000\nTZ=UTC\n");
+    expect(readSecretFromFile(join(dir, ".env"), /^ENCRYPTION_KEY=(.+)$/m)).toBeUndefined();
+  });
+});
 
 describe("getHostIp", () => {
   test("returns a non-empty string", async () => {

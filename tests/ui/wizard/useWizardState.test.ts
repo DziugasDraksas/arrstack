@@ -1,5 +1,23 @@
 import { describe, test, expect } from "bun:test";
-import { buildStateFromWizard, type WizardState } from "../../../src/ui/wizard/useWizardState.js";
+import {
+  buildStateFromWizard,
+  safeSystemId,
+  type WizardState,
+} from "../../../src/ui/wizard/useWizardState.js";
+
+describe("safeSystemId (PUID/PGID must never be 0)", () => {
+  test("clamps 0 (root) to 1000 so LSIO containers don't run as root", () => {
+    expect(safeSystemId(0)).toBe(1000);
+  });
+  test("clamps undefined to 1000", () => {
+    expect(safeSystemId(undefined)).toBe(1000);
+  });
+  test("passes through a normal non-zero uid/gid", () => {
+    expect(safeSystemId(1000)).toBe(1000);
+    expect(safeSystemId(1001)).toBe(1001);
+    expect(safeSystemId(65534)).toBe(65534);
+  });
+});
 
 function makeWizardState(overrides: Partial<WizardState> = {}): WizardState {
   return {
@@ -292,6 +310,77 @@ describe("buildStateFromWizard", () => {
       })
     );
     expect(state.api_keys["prowlarr"]).toBeUndefined();
+  });
+
+  test("reuses a persisted api_key instead of rotating it on reconfigure", () => {
+    const ws = makeWizardState({
+      services: [{ id: "prowlarr", name: "Prowlarr", checked: true }],
+    });
+    const state = buildStateFromWizard(ws, {
+      api_keys: { prowlarr: "EXISTING_KEY", bazarr: "BZ_KEY" },
+    });
+    // Rotating this would break Prowlarr<->arr cross-references.
+    expect(state.api_keys["prowlarr"]).toBe("EXISTING_KEY");
+    // Keys minted outside the catalog (Bazarr, no apiKeyEnv) carry over too.
+    expect(state.api_keys["bazarr"]).toBe("BZ_KEY");
+  });
+
+  test("still generates a fresh key for a newly-added apiKeyEnv service", () => {
+    const state = buildStateFromWizard(
+      makeWizardState({ services: [{ id: "prowlarr", name: "Prowlarr", checked: true }] }),
+      { api_keys: {} }, // resume with no prowlarr key yet
+    );
+    expect(typeof state.api_keys["prowlarr"]).toBe("string");
+    expect(state.api_keys["prowlarr"].length).toBeGreaterThan(0);
+  });
+
+  test("carries persisted long-lived secrets (AES + flask) forward", () => {
+    const state = buildStateFromWizard(makeWizardState(), {
+      secrets: { translator_encryption_key: "AESKEY", bazarr_flask_secret: "FLASK" },
+    });
+    expect(state.secrets?.translator_encryption_key).toBe("AESKEY");
+    expect(state.secrets?.bazarr_flask_secret).toBe("FLASK");
+  });
+
+  test("secrets defaults to an empty object on a fresh install", () => {
+    const state = buildStateFromWizard(makeWizardState());
+    expect(state.secrets).toEqual({});
+  });
+
+  test("auto-adds deunhealth when VPN routes qBittorrent (reboot self-heal)", () => {
+    const state = buildStateFromWizard(
+      makeWizardState({
+        vpnMode: "gluetun",
+        vpnProvider: "mullvad",
+        vpnPrivateKey: "k",
+        vpnAddresses: "10.0.0.1/32",
+        services: [{ id: "qbittorrent", name: "qBittorrent", checked: true }],
+      }),
+    );
+    expect(state.services_enabled).toContain("deunhealth");
+  });
+
+  test("does NOT add deunhealth without VPN", () => {
+    const state = buildStateFromWizard(
+      makeWizardState({
+        vpnMode: "none",
+        services: [{ id: "qbittorrent", name: "qBittorrent", checked: true }],
+      }),
+    );
+    expect(state.services_enabled).not.toContain("deunhealth");
+  });
+
+  test("does NOT add deunhealth when qBittorrent isn't enabled", () => {
+    const state = buildStateFromWizard(
+      makeWizardState({
+        vpnMode: "gluetun",
+        vpnProvider: "mullvad",
+        vpnPrivateKey: "k",
+        vpnAddresses: "10.0.0.1/32",
+        services: [{ id: "sonarr", name: "Sonarr", checked: true }],
+      }),
+    );
+    expect(state.services_enabled).not.toContain("deunhealth");
   });
 
   test("installer_version is a non-empty string", () => {

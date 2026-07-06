@@ -1,6 +1,6 @@
 import { existsSync, openSync, writeSync, closeSync, fsyncSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { readState } from "../state/store.js";
+import { readState, writeState } from "../state/store.js";
 import { exec } from "../lib/exec.js";
 import { getServicesByIds } from "../catalog/index.js";
 import type { Service } from "../catalog/schema.js";
@@ -166,7 +166,25 @@ async function regenerateInstallerConfig(
   state: State,
   log: (line: string) => void
 ): Promise<void> {
-  const services = getServicesByIds(state.services_enabled);
+  // Existing VPN installs from before the reboot fix don't list deunhealth in
+  // services_enabled. Inject it here so `arrstack update` deploys the sidecar
+  // that auto-restarts qBittorrent after a reboot (otherwise qbit would carry
+  // the restart label but have no watcher). Idempotent: skipped if present.
+  const enabledIds = [...state.services_enabled];
+  if (
+    state.vpn.enabled &&
+    enabledIds.includes("qbittorrent") &&
+    !enabledIds.includes("deunhealth")
+  ) {
+    enabledIds.push("deunhealth");
+    log("[update]   adding deunhealth sidecar (auto-restarts qBittorrent after a reboot)");
+    // Persist so state.json matches the deployed compose. doctor derives its
+    // service checklist from services_enabled (so it can actually verify the
+    // sidecar is running), and this stops every later update from re-adding and
+    // re-logging it. Written before the docker steps, same as the compose file.
+    writeState(installDir, { ...state, services_enabled: enabledIds });
+  }
+  const services = getServicesByIds(enabledIds);
 
   const composePath = join(installDir, "docker-compose.yml");
 

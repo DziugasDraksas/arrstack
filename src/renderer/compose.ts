@@ -84,6 +84,8 @@ interface ServiceContext {
   // forms can't be mixed on one service.
   dependsOnLongForm: boolean;
   healthcheck?: Healthcheck;
+  // Compose container labels (e.g. the deunhealth auto-restart marker on qbit).
+  labels: string[];
   vpnNetwork: boolean;
 }
 
@@ -202,6 +204,65 @@ const GLUETUN_HEALTHCHECK: Healthcheck = {
   start_period: "30s",
 };
 
+// Label read by the deunhealth sidecar: it restarts any container carrying it
+// when Docker reports it unhealthy. We put it on qBittorrent only.
+const DEUNHEALTH_LABEL = "deunhealth.restart.on.unhealthy=true";
+
+// Turn a catalog `health` block into a container healthcheck. gluetun keeps its
+// bespoke probe. For everything else we only render `http` blocks: the probe is
+// curl-OR-wget (every arr/media image ships at least one; e.g. jellyseerr has
+// only wget, bazarr only curl) hitting an unauthenticated endpoint, so a real
+// 200 is required to count as healthy. `tcp` blocks (caddy, recyclarr) are
+// skipped: a bare port-open check needs nc, which many images lack, and caddy's
+// :80 can legitimately 404 on an unmatched host. Timings are generous so a slow
+// first boot doesn't flap to unhealthy.
+function buildHealthcheck(svc: Service): Healthcheck | undefined {
+  if (svc.id === "gluetun") return GLUETUN_HEALTHCHECK;
+  const h = svc.health;
+  if (!h || h.type !== "http" || !h.path || h.port <= 0) return undefined;
+  const url = `http://127.0.0.1:${h.port}${h.path}`;
+  return {
+    test: `["CMD-SHELL", "curl -fsS -o /dev/null ${url} || wget -q -O /dev/null ${url} || exit 1"]`,
+    interval: "30s",
+    timeout: "10s",
+    retries: 5,
+    start_period: "45s",
+  };
+}
+
+// Healthcheck for a VPN-routed service (qBittorrent inside gluetun's netns).
+// A loopback WebUI probe is the WRONG signal: after a reboot the container can
+// be orphaned from gluetun's netns with its published port dead, yet its own
+// 127.0.0.1:8080 still answers, so Docker keeps it `healthy` and deunhealth
+// never restarts it. Probe gluetun's control server instead. Because qbit shares
+// gluetun's netns it can reach the control server on 127.0.0.1:8000, but ONLY
+// while it sits in gluetun's LIVE netns; an orphaned/stale netns has no such
+// listener, so the probe fails and deunhealth restarts qbit. Crucially the
+// control server is up whenever the gluetun CONTAINER is up, independent of the
+// tunnel/WAN, so a real VPN outage does NOT restart-loop qbit (unlike an
+// external connectivity check), and there's no third-party dependency. `-f` is
+// omitted so an auth 401 still counts as reachable; only a refused connection
+// (orphaned netns) fails. curl is used directly (LSIO qbit ships it) since
+// busybox wget can't distinguish a 401 from a refused connection.
+const GLUETUN_CONTROL_URL = "http://127.0.0.1:8000/v1/publicip/ip";
+function buildVpnHealthcheck(webuiPort: number): Healthcheck {
+  // Healthy requires BOTH legs. Leg 1 (gluetun's control server) proves qbit is
+  // in gluetun's LIVE netns, catching the reboot orphaned-netns case; no -f, so
+  // an auth 401 still counts as reachable, and it stays green during a real
+  // tunnel outage (the container is up). Leg 2 (qbit's own WebUI) catches a
+  // hung/crashed qbit while gluetun is up, which leg 1 alone would miss; -f so a
+  // non-2xx or timed-out UI fails. Either leg failing -> unhealthy -> deunhealth
+  // restarts qbit.
+  const webui = `http://127.0.0.1:${webuiPort}/`;
+  return {
+    test: `["CMD-SHELL", "curl -sS -m 10 -o /dev/null ${GLUETUN_CONTROL_URL} && curl -fsS -m 10 -o /dev/null ${webui} || exit 1"]`,
+    interval: "30s",
+    timeout: "10s",
+    retries: 3,
+    start_period: "40s",
+  };
+}
+
 // Translates the wizard's VPN state into the env vars gluetun expects
 // (VPN_SERVICE_PROVIDER / VPN_TYPE / WIREGUARD_* / SERVER_COUNTRIES / custom
 // endpoint tuple). Only emitted for the gluetun service and only when VPN
@@ -265,11 +326,37 @@ export function buildComposeContext(services: Service[], opts: ComposeOptions): 
     }
     const dependsOnLongForm = dependsOn.some((d) => d.condition !== undefined);
 
-    const healthcheck = svc.id === "gluetun" ? GLUETUN_HEALTHCHECK : undefined;
+    // VPN-routed services need a tunnel-connectivity probe (see buildVpnHealthcheck)
+    // so deunhealth can actually detect the reboot orphaned-netns state; a plain
+    // loopback probe would pass even when the published port is dead.
+    const healthcheck = vpnNetwork
+      ? buildVpnHealthcheck(svc.health?.port ?? 8080)
+      : buildHealthcheck(svc);
+
+    // Only qBittorrent is auto-restarted by deunhealth. On a host reboot Docker
+    // ignores depends_on ordering, so qbit (network_mode: service:gluetun) can
+    // start before gluetun and end up orphaned from its netns with its WebUI
+    // port dead. restart: unless-stopped won't help because qbit is up, just
+    // broken. Its healthcheck flips it to unhealthy and deunhealth restarts it
+    // once gluetun is ready. Labeling only qbit means nothing else is touched.
+    const labels: string[] = [];
+    if (vpnNetwork) {
+      labels.push(DEUNHEALTH_LABEL);
+    }
 
     const caddyImage = resolveCaddyImage(svc, opts.remoteMode);
 
     const dataMounts = buildDataMounts(svc, opts.storageRoot, opts.extraPaths);
+    if (svc.id === "deunhealth") {
+      // deunhealth watches Docker's health status and restarts labeled
+      // containers, so it needs the daemon socket. Read-only is enough: the
+      // restart API call still works over a ro-mounted socket.
+      dataMounts.push({
+        src: "/var/run/docker.sock",
+        dst: "/var/run/docker.sock",
+        mode: "ro",
+      });
+    }
     if (svc.id === "caddy") {
       // The renderer writes {installDir}/Caddyfile to disk, but the container
       // needs it at /etc/caddy/Caddyfile. Without this explicit mount Caddy
@@ -299,6 +386,7 @@ export function buildComposeContext(services: Service[], opts: ComposeOptions): 
       dependsOn,
       dependsOnLongForm,
       healthcheck,
+      labels,
       vpnNetwork,
     };
   });

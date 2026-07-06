@@ -328,6 +328,27 @@ services:
     extraDevices:
       - /dev/net/tun:/dev/net/tun
 
+  - id: deunhealth
+    name: Deunhealth
+    # Restarts qBittorrent when Docker marks it unhealthy. On a host reboot the
+    # daemon ignores depends_on ordering, so the VPN-routed qbit can start
+    # before gluetun and lose its published WebUI port; a plain restart policy
+    # doesn't help because qbit is up, just orphaned from gluetun's netns.
+    # deunhealth watches the deunhealth.restart.on.unhealthy label (only qbit
+    # carries it) and restarts it once gluetun is healthy again. The renderer
+    # bind-mounts /var/run/docker.sock (ro) so it can talk to the daemon.
+    description: Auto-restarts qBittorrent if it goes unhealthy after a reboot
+    category: utility
+    image: qmcgaw/deunhealth
+    tag: "latest"
+    ports: []
+    configPath: /config
+    mounts: {}
+    envVars: {}
+    dependsOn: []
+    default: false
+    requiresAdminAuth: false
+
   - id: dnsmasq
     name: dnsmasq
     description: LAN-wide DNS so "*.<tld>" resolves to this host on every client

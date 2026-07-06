@@ -4,7 +4,7 @@ import { VERSION } from "./version.js";
 import { render } from "ink";
 import React from "react";
 import { App } from "./ui/App.js";
-import { readState } from "./state/store.js";
+import { readState, adminTxtGuardMessage } from "./state/store.js";
 import { runDoctor } from "./usecase/doctor.js";
 import { runUpdate } from "./usecase/update.js";
 import { showPassword } from "./usecase/show-password.js";
@@ -15,6 +15,20 @@ import { runHosts, revertHosts } from "./usecase/hosts.js";
 import { exec } from "./lib/exec.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+
+// A previous `sudo` install can leave admin.txt root-owned; a later non-sudo
+// run then can't read it, would generate a NEW admin password, rewrite
+// qBittorrent.conf, and lock the user out of the still-running qbit container.
+// Stop early with a fix instead of silently rotating. Applies to every
+// entrypoint that launches the wizard against an existing install (both
+// `arrstack install` and bare `arrstack`).
+function guardAdminTxtReadable(installDir: string): void {
+  const msg = adminTxtGuardMessage(installDir);
+  if (msg) {
+    console.error(`\n${msg}\n`);
+    process.exit(1);
+  }
+}
 
 const program = new Command();
 
@@ -50,6 +64,9 @@ program
         console.log(`Removed: ${path}`);
       }
     }
+    // --fresh purges the dir (removing admin.txt) just above, so only guard a
+    // resume/reconfigure over an existing install.
+    if (!opts.fresh) guardAdminTxtReadable(installDir);
     const existing = opts.fresh ? null : readState(installDir);
     const { waitUntilExit } = render(React.createElement(App, { existingState: existing }));
     await waitUntilExit();
@@ -129,6 +146,7 @@ program
 // If no subcommand provided (just `arrstack`), launch the TUI
 program.action(async () => {
   const installDir = `${process.env.HOME}/arrstack`;
+  guardAdminTxtReadable(installDir);
   const existing = readState(installDir);
   const { waitUntilExit } = render(React.createElement(App, { existingState: existing }));
   await waitUntilExit();

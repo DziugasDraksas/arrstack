@@ -1,4 +1,4 @@
-import { writeFileSync, mkdirSync, chownSync } from "node:fs";
+import { writeFileSync, readFileSync, mkdirSync, chownSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 
@@ -148,6 +148,19 @@ function normalizeState(state: State): State {
   return state;
 }
 
+// Recover a secret already written into an installer-owned file (.env,
+// Bazarr config.yaml) so an upgrade to a version that persists it in state.json
+// doesn't rotate it. Returns the trimmed first capture group, or undefined if
+// the file is absent/unreadable or the pattern doesn't match.
+export function readSecretFromFile(path: string, re: RegExp): string | undefined {
+  try {
+    const m = readFileSync(path, "utf-8").match(re);
+    return m?.[1]?.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function runInstall(
   rawState: State,
   adminPassword: string,
@@ -170,9 +183,34 @@ export async function runInstall(
   let pbkdf2Hash = "";
   let bazarrHash = "";
   let hostIp = "localhost";
-  // Generated once, shared between the .env (-> ai-subtitle-translator) and
-  // Bazarr's config.yaml so AES-GCM encryption between the two matches.
-  const translatorEncryptionKey = randomBytes(32).toString("hex");
+  // Long-lived secrets: reuse whatever a prior install persisted so a
+  // reconfigure/resume does NOT rotate them. The AES-GCM key is shared between
+  // the .env (-> ai-subtitle-translator) and Bazarr's config.yaml so their
+  // encryption matches (rotating it orphans data encrypted at rest); the Flask
+  // secret backs Bazarr's sessions. Both are written back into state.json below.
+  // Precedence: the value persisted in state.json (v1.1.1+) wins; otherwise, for
+  // an install created before the secrets field existed, recover the key already
+  // baked into the .env / Bazarr config so we do NOT rotate it (rotating orphans
+  // everything Bazarr and the translator encrypted at rest). Only mint a new one
+  // on a genuinely fresh install where neither exists.
+  const secrets: State["secrets"] = { ...(state.secrets ?? {}) };
+  const translatorEncryptionKey =
+    secrets.translator_encryption_key ??
+    readSecretFromFile(join(installDir, ".env"), /^ENCRYPTION_KEY=(.+)$/m) ??
+    randomBytes(32).toString("hex");
+  secrets.translator_encryption_key = translatorEncryptionKey;
+  const bazarrFlaskSecret =
+    secrets.bazarr_flask_secret ??
+    readSecretFromFile(
+      join(installDir, "config", "bazarr", "config", "config.yaml"),
+      // Bazarr rewrites this file at runtime, so be strict: anchor to the line,
+      // require a same-line (not newline-swallowed) value, and strip optional
+      // surrounding quotes. An empty/quoted/commented key then falls through to
+      // generation rather than capturing the wrong text.
+      /^\s*flask_secret_key:[ \t]*["']?([^"'\s]+)["']?\s*$/m,
+    ) ??
+    generateApiKey();
+  secrets.bazarr_flask_secret = bazarrFlaskSecret;
 
   // Step 1: Create storage layout (primary root + tv/movies subdirs inside each
   // extra path so reconfigures that add drives also get their layout).
@@ -313,7 +351,7 @@ export async function runInstall(
         username: state.admin.username,
         passwordHash: bazarrHash,
         bazarrApiKey: apiKeys["bazarr"],
-        flaskSecretKey: generateApiKey(),
+        flaskSecretKey: bazarrFlaskSecret,
         sonarrApiKey: apiKeys["sonarr"] ?? "",
         radarrApiKey: apiKeys["radarr"] ?? "",
         translatorEncryptionKey,
@@ -384,6 +422,7 @@ export async function runInstall(
     writeState(installDir, {
       ...state,
       api_keys: apiKeys,
+      secrets,
       install_started_at: installStartedAt,
     });
     // Persist the admin password early (mode 600). state.json never stores it,
@@ -661,6 +700,7 @@ export async function runInstall(
     const finalState: State = {
       ...state,
       api_keys: apiKeys,
+      secrets,
       install_started_at: installStartedAt,
       install_completed_at: new Date().toISOString(),
       last_updated_at: new Date().toISOString(),
