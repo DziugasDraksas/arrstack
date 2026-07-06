@@ -230,6 +230,28 @@ function buildHealthcheck(svc: Service): Healthcheck | undefined {
   };
 }
 
+// Healthcheck for a VPN-routed service (qBittorrent inside gluetun's netns).
+// A loopback WebUI probe is the WRONG signal here: after a reboot the container
+// can be orphaned from gluetun's netns with its published port dead, yet its
+// own 127.0.0.1:8080 still answers, so Docker keeps it `healthy` and deunhealth
+// never restarts it. Probe external connectivity through the tunnel instead: it
+// succeeds ONLY when the container sits in gluetun's live netns, which is
+// exactly when the published WebUI port also routes correctly. Plain HTTP + a
+// 204 endpoint so the busybox-wget fallback works without TLS; lenient timing
+// (5 x 30s after a 60s grace) so a brief VPN reconnect doesn't trigger a
+// needless restart while a genuine orphan still self-heals within a few minutes.
+const VPN_CONNECTIVITY_URL = "http://cp.cloudflare.com/generate_204";
+function buildVpnHealthcheck(): Healthcheck {
+  const u = VPN_CONNECTIVITY_URL;
+  return {
+    test: `["CMD-SHELL", "curl -fsS -m 10 -o /dev/null ${u} || wget -q -T 10 -O /dev/null ${u} || exit 1"]`,
+    interval: "30s",
+    timeout: "15s",
+    retries: 5,
+    start_period: "60s",
+  };
+}
+
 // Translates the wizard's VPN state into the env vars gluetun expects
 // (VPN_SERVICE_PROVIDER / VPN_TYPE / WIREGUARD_* / SERVER_COUNTRIES / custom
 // endpoint tuple). Only emitted for the gluetun service and only when VPN
@@ -293,7 +315,10 @@ export function buildComposeContext(services: Service[], opts: ComposeOptions): 
     }
     const dependsOnLongForm = dependsOn.some((d) => d.condition !== undefined);
 
-    const healthcheck = buildHealthcheck(svc);
+    // VPN-routed services need a tunnel-connectivity probe (see buildVpnHealthcheck)
+    // so deunhealth can actually detect the reboot orphaned-netns state; a plain
+    // loopback probe would pass even when the published port is dead.
+    const healthcheck = vpnNetwork ? buildVpnHealthcheck() : buildHealthcheck(svc);
 
     // Only qBittorrent is auto-restarted by deunhealth. On a host reboot Docker
     // ignores depends_on ordering, so qbit (network_mode: service:gluetun) can

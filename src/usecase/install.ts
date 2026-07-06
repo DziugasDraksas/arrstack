@@ -1,4 +1,4 @@
-import { writeFileSync, mkdirSync, chownSync } from "node:fs";
+import { writeFileSync, readFileSync, mkdirSync, chownSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 
@@ -148,6 +148,19 @@ function normalizeState(state: State): State {
   return state;
 }
 
+// Recover a secret already written into an installer-owned file (.env,
+// Bazarr config.yaml) so an upgrade to a version that persists it in state.json
+// doesn't rotate it. Returns the trimmed first capture group, or undefined if
+// the file is absent/unreadable or the pattern doesn't match.
+export function readSecretFromFile(path: string, re: RegExp): string | undefined {
+  try {
+    const m = readFileSync(path, "utf-8").match(re);
+    return m?.[1]?.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function runInstall(
   rawState: State,
   adminPassword: string,
@@ -175,11 +188,24 @@ export async function runInstall(
   // the .env (-> ai-subtitle-translator) and Bazarr's config.yaml so their
   // encryption matches (rotating it orphans data encrypted at rest); the Flask
   // secret backs Bazarr's sessions. Both are written back into state.json below.
+  // Precedence: the value persisted in state.json (v1.1.1+) wins; otherwise, for
+  // an install created before the secrets field existed, recover the key already
+  // baked into the .env / Bazarr config so we do NOT rotate it (rotating orphans
+  // everything Bazarr and the translator encrypted at rest). Only mint a new one
+  // on a genuinely fresh install where neither exists.
   const secrets: State["secrets"] = { ...(state.secrets ?? {}) };
   const translatorEncryptionKey =
-    secrets.translator_encryption_key ?? randomBytes(32).toString("hex");
+    secrets.translator_encryption_key ??
+    readSecretFromFile(join(installDir, ".env"), /^ENCRYPTION_KEY=(.+)$/m) ??
+    randomBytes(32).toString("hex");
   secrets.translator_encryption_key = translatorEncryptionKey;
-  const bazarrFlaskSecret = secrets.bazarr_flask_secret ?? generateApiKey();
+  const bazarrFlaskSecret =
+    secrets.bazarr_flask_secret ??
+    readSecretFromFile(
+      join(installDir, "config", "bazarr", "config", "config.yaml"),
+      /flask_secret_key:\s*(.+)/,
+    ) ??
+    generateApiKey();
   secrets.bazarr_flask_secret = bazarrFlaskSecret;
 
   // Step 1: Create storage layout (primary root + tv/movies subdirs inside each

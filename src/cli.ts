@@ -16,6 +16,23 @@ import { exec } from "./lib/exec.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
+// A previous `sudo` install can leave admin.txt root-owned; a later non-sudo
+// run then can't read it, would generate a NEW admin password, rewrite
+// qBittorrent.conf, and lock the user out of the still-running qbit container.
+// Stop early with a fix instead of silently rotating. Applies to every
+// entrypoint that launches the wizard against an existing install (both
+// `arrstack install` and bare `arrstack`).
+function guardAdminTxtReadable(installDir: string): void {
+  if (!adminTxtUnreadable(installDir)) return;
+  const adminTxt = join(installDir, "admin.txt");
+  console.error(
+    `\nCannot read ${adminTxt}. It looks like a previous 'sudo arrstack install' left it owned by root.\n` +
+      `Fix ownership and re-run as your normal user (not sudo):\n` +
+      `  sudo chown $(id -u):$(id -g) ${adminTxt}\n`
+  );
+  process.exit(1);
+}
+
 const program = new Command();
 
 program
@@ -50,19 +67,9 @@ program
         console.log(`Removed: ${path}`);
       }
     }
-    // A previous `sudo` install can leave admin.txt root-owned; a later
-    // non-sudo run then can't read it, would generate a NEW admin password,
-    // rewrite qBittorrent.conf, and lock the user out of the still-running qbit
-    // container. Stop early with a fix instead of silently rotating.
-    if (!opts.fresh && adminTxtUnreadable(installDir)) {
-      const adminTxt = join(installDir, "admin.txt");
-      console.error(
-        `\nCannot read ${adminTxt}. It looks like a previous 'sudo arrstack install' left it owned by root.\n` +
-          `Fix ownership and re-run as your normal user (not sudo):\n` +
-          `  sudo chown $(id -u):$(id -g) ${adminTxt}\n`
-      );
-      process.exit(1);
-    }
+    // --fresh purges the dir (removing admin.txt) just above, so only guard a
+    // resume/reconfigure over an existing install.
+    if (!opts.fresh) guardAdminTxtReadable(installDir);
     const existing = opts.fresh ? null : readState(installDir);
     const { waitUntilExit } = render(React.createElement(App, { existingState: existing }));
     await waitUntilExit();
@@ -142,6 +149,7 @@ program
 // If no subcommand provided (just `arrstack`), launch the TUI
 program.action(async () => {
   const installDir = `${process.env.HOME}/arrstack`;
+  guardAdminTxtReadable(installDir);
   const existing = readState(installDir);
   const { waitUntilExit } = render(React.createElement(App, { existingState: existing }));
   await waitUntilExit();

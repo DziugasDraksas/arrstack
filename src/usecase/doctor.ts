@@ -21,6 +21,10 @@ function fail(label: string, msg: string, hint?: string) {
   }
 }
 
+function warn(label: string, msg: string) {
+  console.log(`  ${YELLOW}⚠${RESET} ${label}: ${msg}`);
+}
+
 function section(title: string) {
   console.log(`\n${BOLD}${title}${RESET}`);
 }
@@ -69,6 +73,10 @@ export async function runDoctor(installDir: string): Promise<void> {
   for (const check of preflightResults) {
     if (check.ok) {
       pass(check.name, check.message);
+    } else if (!check.blocking) {
+      // Advisory only (e.g. running as root): surface it but don't flip doctor
+      // to a failing exit, since checkNotRoot() marks it blocking: false.
+      warn(check.name, check.message);
     } else {
       allOk = false;
       const hint = remediationHint(check);

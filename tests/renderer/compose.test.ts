@@ -282,11 +282,23 @@ describe("healthchecks + deunhealth reboot self-heal", () => {
     expect(sonarr.healthcheck!.test).toContain("http://127.0.0.1:8989/ping");
   });
 
-  test("qBittorrent gets a healthcheck (needed for deunhealth to detect the orphaned netns)", () => {
+  test("non-VPN qBittorrent uses the loopback WebUI probe", () => {
     const ctx = buildComposeContext(getServices(["qbittorrent"]), baseOpts);
     const qbit = ctx.services.find((s) => s.id === "qbittorrent")!;
     expect(qbit.healthcheck).toBeDefined();
     expect(qbit.healthcheck!.test).toContain("http://127.0.0.1:8080/");
+  });
+
+  test("VPN-routed qBittorrent probes tunnel connectivity, not loopback", () => {
+    // A loopback WebUI probe passes even when qbit is orphaned from gluetun's
+    // netns after a reboot (its own 127.0.0.1 still answers), so deunhealth
+    // would never fire. The tunnel probe only succeeds in gluetun's live netns.
+    const opts = { ...baseOpts, vpn: { enabled: true, provider: "mullvad" } };
+    const ctx = buildComposeContext(getServices(["gluetun", "qbittorrent"]), opts);
+    const qbit = ctx.services.find((s) => s.id === "qbittorrent")!;
+    expect(qbit.healthcheck).toBeDefined();
+    expect(qbit.healthcheck!.test).toContain("cp.cloudflare.com/generate_204");
+    expect(qbit.healthcheck!.test).not.toContain("127.0.0.1:8080");
   });
 
   test("tcp/port-0 catalog health blocks are NOT rendered (caddy, recyclarr)", () => {
