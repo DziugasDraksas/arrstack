@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, statSync 
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runUpdate, type UpdateDeps } from "../../src/usecase/update.js";
-import { writeState } from "../../src/state/store.js";
+import { writeState, readState } from "../../src/state/store.js";
 import type { State } from "../../src/state/schema.js";
 
 const VALID_STATE: State = {
@@ -169,6 +169,25 @@ test("runUpdate injects the deunhealth sidecar into an existing VPN install's co
   expect(compose).toContain("deunhealth.restart.on.unhealthy=true");
   const logTxt = readFileSync(join(dir, "update.log"), "utf-8");
   expect(logTxt).toContain("adding deunhealth sidecar");
+  // state.json must be updated too, so doctor can verify the sidecar and a
+  // later update doesn't re-add/re-log it (compose/state drift).
+  expect(readState(dir)?.services_enabled).toContain("deunhealth");
+});
+
+test("runUpdate does not re-add deunhealth when it's already in services_enabled", async () => {
+  const dir = makeInstallDir(true, false);
+  writeState(dir, {
+    ...VALID_STATE,
+    install_dir: dir,
+    services_enabled: ["gluetun", "qbittorrent", "deunhealth"],
+    vpn: { enabled: true, provider: "mullvad", type: "wireguard", private_key: "K==", addresses: "10.0.0.2/32" },
+  });
+  const { deps } = makeDeps();
+
+  await silently(() => runUpdate(dir, deps));
+
+  const logTxt = readFileSync(join(dir, "update.log"), "utf-8");
+  expect(logTxt).not.toContain("adding deunhealth sidecar");
 });
 
 test("runUpdate summary reports changed service images", async () => {

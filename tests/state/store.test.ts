@@ -2,7 +2,12 @@ import { test, expect, afterEach } from "bun:test";
 import { mkdirSync, rmSync, statSync, writeFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { readState, writeState, adminTxtUnreadable } from "../../src/state/store.js";
+import {
+  readState,
+  writeState,
+  adminTxtUnreadable,
+  adminTxtGuardMessage,
+} from "../../src/state/store.js";
 import type { State } from "../../src/state/schema.js";
 
 const TMP = join(tmpdir(), `arrstack-state-test-${process.pid}`);
@@ -95,4 +100,24 @@ test("adminTxtUnreadable: true when admin.txt exists but can't be read", () => {
   chmodSync(p, 0o000);
   expect(adminTxtUnreadable(TMP)).toBe(true);
   chmodSync(p, 0o600); // let afterEach clean up
+});
+
+test("adminTxtGuardMessage: null when admin.txt is absent or readable", () => {
+  mkdirSync(TMP, { recursive: true });
+  expect(adminTxtGuardMessage(TMP)).toBeNull();
+  writeFileSync(join(TMP, "admin.txt"), "password: hunter2\n");
+  expect(adminTxtGuardMessage(TMP)).toBeNull();
+});
+
+test("adminTxtGuardMessage: actionable chown message when admin.txt is unreadable", () => {
+  if (typeof process.getuid === "function" && process.getuid() === 0) return;
+  mkdirSync(TMP, { recursive: true });
+  const p = join(TMP, "admin.txt");
+  writeFileSync(p, "password: hunter2\n");
+  chmodSync(p, 0o000);
+  const msg = adminTxtGuardMessage(TMP);
+  expect(msg).not.toBeNull();
+  expect(msg).toContain("chown");
+  expect(msg).toContain(p);
+  chmodSync(p, 0o600);
 });

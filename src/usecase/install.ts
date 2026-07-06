@@ -203,7 +203,11 @@ export async function runInstall(
     secrets.bazarr_flask_secret ??
     readSecretFromFile(
       join(installDir, "config", "bazarr", "config", "config.yaml"),
-      /flask_secret_key:\s*(.+)/,
+      // Bazarr rewrites this file at runtime, so be strict: anchor to the line,
+      // require a same-line (not newline-swallowed) value, and strip optional
+      // surrounding quotes. An empty/quoted/commented key then falls through to
+      // generation rather than capturing the wrong text.
+      /^\s*flask_secret_key:[ \t]*["']?([^"'\s]+)["']?\s*$/m,
     ) ??
     generateApiKey();
   secrets.bazarr_flask_secret = bazarrFlaskSecret;

@@ -289,15 +289,19 @@ describe("healthchecks + deunhealth reboot self-heal", () => {
     expect(qbit.healthcheck!.test).toContain("http://127.0.0.1:8080/");
   });
 
-  test("VPN-routed qBittorrent probes tunnel connectivity, not loopback", () => {
+  test("VPN-routed qBittorrent probes gluetun's control server, not loopback", () => {
     // A loopback WebUI probe passes even when qbit is orphaned from gluetun's
-    // netns after a reboot (its own 127.0.0.1 still answers), so deunhealth
-    // would never fire. The tunnel probe only succeeds in gluetun's live netns.
+    // netns after a reboot (its own 127.0.0.1:8080 still answers), so deunhealth
+    // would never fire. Probing gluetun's control server (127.0.0.1:8000, shared
+    // netns) only succeeds in the LIVE netns, and unlike an external check it
+    // stays healthy during a real tunnel outage (no pointless restart loop).
     const opts = { ...baseOpts, vpn: { enabled: true, provider: "mullvad" } };
     const ctx = buildComposeContext(getServices(["gluetun", "qbittorrent"]), opts);
     const qbit = ctx.services.find((s) => s.id === "qbittorrent")!;
     expect(qbit.healthcheck).toBeDefined();
-    expect(qbit.healthcheck!.test).toContain("cp.cloudflare.com/generate_204");
+    expect(qbit.healthcheck!.test).toContain("127.0.0.1:8000");
+    // -f omitted so an auth 401 still counts as reachable (only refused fails).
+    expect(qbit.healthcheck!.test).not.toContain("-f");
     expect(qbit.healthcheck!.test).not.toContain("127.0.0.1:8080");
   });
 
@@ -336,11 +340,15 @@ describe("healthchecks + deunhealth reboot self-heal", () => {
     expect(sonarr.dataMounts.some((m) => m.src.includes("docker.sock"))).toBe(false);
   });
 
-  test("every service renders restart: unless-stopped (the reboot recovery floor)", () => {
-    const ids = ["qbittorrent", "gluetun", "sonarr", "caddy", "deunhealth"];
+  test("VPN stack renders the full reboot-recovery trio together (sidecar + label + socket)", () => {
+    // All three must co-render or the self-heal is a no-op: the deunhealth
+    // watcher, the label that arms it on qbit, and the socket that lets it
+    // actually restart qbit. This fails if any leg of the v1.1.1 change regresses.
+    const ids = ["gluetun", "qbittorrent", "deunhealth"];
     const opts = { ...baseOpts, vpn: { enabled: true, provider: "mullvad" } };
     const output = renderCompose(getServices(ids), opts);
-    // One "restart: unless-stopped" per service.
-    expect(output.match(/restart: unless-stopped/g)?.length).toBe(ids.length);
+    expect(output).toContain("deunhealth:");
+    expect(output).toContain("deunhealth.restart.on.unhealthy=true");
+    expect(output).toContain("/var/run/docker.sock:/var/run/docker.sock:ro");
   });
 });

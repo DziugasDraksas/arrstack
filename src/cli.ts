@@ -4,7 +4,7 @@ import { VERSION } from "./version.js";
 import { render } from "ink";
 import React from "react";
 import { App } from "./ui/App.js";
-import { readState, adminTxtUnreadable } from "./state/store.js";
+import { readState, adminTxtGuardMessage } from "./state/store.js";
 import { runDoctor } from "./usecase/doctor.js";
 import { runUpdate } from "./usecase/update.js";
 import { showPassword } from "./usecase/show-password.js";
@@ -23,14 +23,11 @@ import { join } from "node:path";
 // entrypoint that launches the wizard against an existing install (both
 // `arrstack install` and bare `arrstack`).
 function guardAdminTxtReadable(installDir: string): void {
-  if (!adminTxtUnreadable(installDir)) return;
-  const adminTxt = join(installDir, "admin.txt");
-  console.error(
-    `\nCannot read ${adminTxt}. It looks like a previous 'sudo arrstack install' left it owned by root.\n` +
-      `Fix ownership and re-run as your normal user (not sudo):\n` +
-      `  sudo chown $(id -u):$(id -g) ${adminTxt}\n`
-  );
-  process.exit(1);
+  const msg = adminTxtGuardMessage(installDir);
+  if (msg) {
+    console.error(`\n${msg}\n`);
+    process.exit(1);
+  }
 }
 
 const program = new Command();

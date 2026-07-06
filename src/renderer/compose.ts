@@ -231,24 +231,27 @@ function buildHealthcheck(svc: Service): Healthcheck | undefined {
 }
 
 // Healthcheck for a VPN-routed service (qBittorrent inside gluetun's netns).
-// A loopback WebUI probe is the WRONG signal here: after a reboot the container
-// can be orphaned from gluetun's netns with its published port dead, yet its
-// own 127.0.0.1:8080 still answers, so Docker keeps it `healthy` and deunhealth
-// never restarts it. Probe external connectivity through the tunnel instead: it
-// succeeds ONLY when the container sits in gluetun's live netns, which is
-// exactly when the published WebUI port also routes correctly. Plain HTTP + a
-// 204 endpoint so the busybox-wget fallback works without TLS; lenient timing
-// (5 x 30s after a 60s grace) so a brief VPN reconnect doesn't trigger a
-// needless restart while a genuine orphan still self-heals within a few minutes.
-const VPN_CONNECTIVITY_URL = "http://cp.cloudflare.com/generate_204";
+// A loopback WebUI probe is the WRONG signal: after a reboot the container can
+// be orphaned from gluetun's netns with its published port dead, yet its own
+// 127.0.0.1:8080 still answers, so Docker keeps it `healthy` and deunhealth
+// never restarts it. Probe gluetun's control server instead. Because qbit shares
+// gluetun's netns it can reach the control server on 127.0.0.1:8000, but ONLY
+// while it sits in gluetun's LIVE netns; an orphaned/stale netns has no such
+// listener, so the probe fails and deunhealth restarts qbit. Crucially the
+// control server is up whenever the gluetun CONTAINER is up, independent of the
+// tunnel/WAN, so a real VPN outage does NOT restart-loop qbit (unlike an
+// external connectivity check), and there's no third-party dependency. `-f` is
+// omitted so an auth 401 still counts as reachable; only a refused connection
+// (orphaned netns) fails. curl is used directly (LSIO qbit ships it) since
+// busybox wget can't distinguish a 401 from a refused connection.
+const GLUETUN_CONTROL_URL = "http://127.0.0.1:8000/v1/publicip/ip";
 function buildVpnHealthcheck(): Healthcheck {
-  const u = VPN_CONNECTIVITY_URL;
   return {
-    test: `["CMD-SHELL", "curl -fsS -m 10 -o /dev/null ${u} || wget -q -T 10 -O /dev/null ${u} || exit 1"]`,
+    test: `["CMD-SHELL", "curl -sS -m 10 -o /dev/null ${GLUETUN_CONTROL_URL} || exit 1"]`,
     interval: "30s",
-    timeout: "15s",
-    retries: 5,
-    start_period: "60s",
+    timeout: "10s",
+    retries: 3,
+    start_period: "40s",
   };
 }
 

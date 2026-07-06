@@ -1,6 +1,6 @@
 import { existsSync, openSync, writeSync, closeSync, fsyncSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { readState } from "../state/store.js";
+import { readState, writeState } from "../state/store.js";
 import { exec } from "../lib/exec.js";
 import { getServicesByIds } from "../catalog/index.js";
 import type { Service } from "../catalog/schema.js";
@@ -178,6 +178,11 @@ async function regenerateInstallerConfig(
   ) {
     enabledIds.push("deunhealth");
     log("[update]   adding deunhealth sidecar (auto-restarts qBittorrent after a reboot)");
+    // Persist so state.json matches the deployed compose. doctor derives its
+    // service checklist from services_enabled (so it can actually verify the
+    // sidecar is running), and this stops every later update from re-adding and
+    // re-logging it. Written before the docker steps, same as the compose file.
+    writeState(installDir, { ...state, services_enabled: enabledIds });
   }
   const services = getServicesByIds(enabledIds);
 

@@ -35,6 +35,19 @@ export function adminTxtUnreadable(installDir: string): boolean {
   }
 }
 
+// The actionable message to print when admin.txt can't be read, or null when
+// it's fine to proceed. Kept here (not in cli.ts, which self-executes on import)
+// so the guard's decision is unit-testable. cli.ts prints this and exits.
+export function adminTxtGuardMessage(installDir: string): string | null {
+  if (!adminTxtUnreadable(installDir)) return null;
+  const p = join(installDir, "admin.txt");
+  return (
+    `Cannot read ${p}. It looks like a previous 'sudo arrstack install' left it owned by root.\n` +
+    `Fix ownership and re-run as your normal user (not sudo):\n` +
+    `  sudo chown $(id -u):$(id -g) ${p}`
+  );
+}
+
 export function writeState(installDir: string, state: State): void {
   const statePath = join(installDir, STATE_FILE);
   const tmpPath = `${statePath}.tmp`;

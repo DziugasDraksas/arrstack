@@ -25,6 +25,16 @@ function warn(label: string, msg: string) {
   console.log(`  ${YELLOW}⚠${RESET} ${label}: ${msg}`);
 }
 
+export type CheckOutcome = "pass" | "warn" | "fail";
+
+// A passing check passes; a failing but non-blocking check (e.g. the root-user
+// advisory) is only a warning and must NOT fail doctor; a failing blocking
+// check is a hard failure.
+export function classifyCheck(check: CheckResult): CheckOutcome {
+  if (check.ok) return "pass";
+  return check.blocking ? "fail" : "warn";
+}
+
 function section(title: string) {
   console.log(`\n${BOLD}${title}${RESET}`);
 }
@@ -71,9 +81,10 @@ export async function runDoctor(installDir: string): Promise<void> {
     skipPortChecks: true,
   });
   for (const check of preflightResults) {
-    if (check.ok) {
+    const outcome = classifyCheck(check);
+    if (outcome === "pass") {
       pass(check.name, check.message);
-    } else if (!check.blocking) {
+    } else if (outcome === "warn") {
       // Advisory only (e.g. running as root): surface it but don't flip doctor
       // to a failing exit, since checkNotRoot() marks it blocking: false.
       warn(check.name, check.message);

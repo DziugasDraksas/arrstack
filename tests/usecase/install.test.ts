@@ -53,14 +53,38 @@ describe("readSecretFromFile (legacy secret migration)", () => {
     );
   });
 
+  const FLASK_RE = /^\s*flask_secret_key:[ \t]*["']?([^"'\s]+)["']?\s*$/m;
+
   test("recovers flask_secret_key from an existing Bazarr config.yaml", () => {
     dir = mkdtempSync(join(tmpdir(), "arrstack-secret-"));
     const cfg = join(dir, "config", "bazarr", "config");
     mkdirSync(cfg, { recursive: true });
-    writeFileSync(join(cfg, "config.yaml"), "general:\n  flask_secret_key: abc123secret\n");
-    expect(
-      readSecretFromFile(join(cfg, "config.yaml"), /flask_secret_key:\s*(.+)/),
-    ).toBe("abc123secret");
+    writeFileSync(join(cfg, "config.yaml"), "general:\n  flask_secret_key: abc123secret\n  ip: '*'\n");
+    expect(readSecretFromFile(join(cfg, "config.yaml"), FLASK_RE)).toBe("abc123secret");
+  });
+
+  test("strips surrounding quotes if Bazarr re-serializes the flask secret quoted", () => {
+    dir = mkdtempSync(join(tmpdir(), "arrstack-secret-"));
+    const cfg = join(dir, "config", "bazarr", "config");
+    mkdirSync(cfg, { recursive: true });
+    writeFileSync(join(cfg, "config.yaml"), "general:\n  flask_secret_key: 'deadbeef99'\n");
+    expect(readSecretFromFile(join(cfg, "config.yaml"), FLASK_RE)).toBe("deadbeef99");
+  });
+
+  test("does NOT capture the next line when the flask secret is empty (falls through to generate)", () => {
+    dir = mkdtempSync(join(tmpdir(), "arrstack-secret-"));
+    const cfg = join(dir, "config", "bazarr", "config");
+    mkdirSync(cfg, { recursive: true });
+    writeFileSync(join(cfg, "config.yaml"), "general:\n  flask_secret_key:\n  ip: '*'\n");
+    expect(readSecretFromFile(join(cfg, "config.yaml"), FLASK_RE)).toBeUndefined();
+  });
+
+  test("ignores a commented-out flask_secret_key line", () => {
+    dir = mkdtempSync(join(tmpdir(), "arrstack-secret-"));
+    const cfg = join(dir, "config", "bazarr", "config");
+    mkdirSync(cfg, { recursive: true });
+    writeFileSync(join(cfg, "config.yaml"), "general:\n  # flask_secret_key: OLDVALUE\n  flask_secret_key: realkey42\n");
+    expect(readSecretFromFile(join(cfg, "config.yaml"), FLASK_RE)).toBe("realkey42");
   });
 
   test("returns undefined when the file is missing (fresh install)", () => {
