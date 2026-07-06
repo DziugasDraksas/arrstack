@@ -18,14 +18,23 @@ function fakeCatalog() {
 // provider to the installed set, so the subsequent GET /providers (which
 // waitForInstalled polls) sees it. Without this the install would "never finish"
 // and every provider would time out.
-function makeStatefulFetch(opts: { preinstalled?: string[]; installThrows?: boolean } = {}) {
+function makeStatefulFetch(
+  opts: { preinstalled?: string[]; installThrows?: boolean; statusFailsTimes?: number } = {},
+) {
   const installed = new Set<string>(opts.preinstalled ?? []);
   const calls: Array<{ method: string; url: string; body?: any }> = [];
+  let statusCalls = 0;
   const fetchFn = async (url: any, init: any = {}) => {
     const u = String(url);
     const method = init.method ?? "GET";
     const body = init.body ? JSON.parse(init.body) : undefined;
     calls.push({ method, url: u, body });
+    if (u.endsWith("/api/system/status")) {
+      // Simulate Bazarr+'s DB-migration window: 500 a few times, then live.
+      statusCalls += 1;
+      const ready = statusCalls > (opts.statusFailsTimes ?? 0);
+      return new Response(ready ? "{}" : "migrating", { status: ready ? 200 : 500 });
+    }
     if (u.endsWith("/provider-hub/catalog")) {
       return new Response(JSON.stringify(fakeCatalog()), { status: 200 });
     }
@@ -115,5 +124,31 @@ describe("configureBazarrProviderHub", () => {
     ).resolves.toBeUndefined();
     expect(warnings.some((w) => w.toLowerCase().includes("opensubtitles"))).toBe(true);
     expect(warnings.length).toBeGreaterThanOrEqual(5); // one warning per provider
+  });
+
+  test("waits out Bazarr's post-restart HTTP 500 window instead of silently no-opping", async () => {
+    // The update path only gates on /api/system/ping (200 early), so the API can
+    // still 500 for 30-60s during DB migrations. /api/system/status 500s twice
+    // then goes live; the readiness gate must wait, then install all providers,
+    // NOT skip them as 'not in the catalog'.
+    const warnings: string[] = [];
+    const { fetchFn, calls } = makeStatefulFetch({ statusFailsTimes: 2 });
+    globalThis.fetch = fetchFn as any;
+
+    await configureBazarrProviderHub({
+      apiKey: "K",
+      flaresolverrUrl: FLARE,
+      base: "http://bz.test",
+      pollTimeoutMs: 500,
+      pollIntervalMs: 5,
+      readyIntervalMs: 5, // don't wait the real 2s between readiness polls
+      log: (m) => warnings.push(m),
+    });
+
+    // Readiness gate polled status 3 times (500, 500, 200) before proceeding.
+    expect(calls.filter((c) => c.url.endsWith("/api/system/status"))).toHaveLength(3);
+    // All 5 providers installed (the feature did NOT no-op).
+    expect(calls.filter((c) => c.method === "POST" && c.url.endsWith("/installations"))).toHaveLength(5);
+    expect(warnings.some((w) => w.includes("not in the catalog"))).toBe(false);
   });
 });

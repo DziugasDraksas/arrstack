@@ -548,7 +548,9 @@ export async function runInstall(
       try {
         await configureBazarrProviderHub({
           apiKey: apiKeys["bazarr"] ?? "",
-          flaresolverrUrl: "http://flaresolverr:8191/v1",
+          // Only point the opensubtitles provider at FlareSolverr when it's
+          // actually deployed; a legacy install can have bazarr without it.
+          flaresolverrUrl: has("flaresolverr") ? "http://flaresolverr:8191/v1" : "",
           log: (m) => log.info("provider-hub", m),
         });
       } catch (err) {

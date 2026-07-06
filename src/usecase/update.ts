@@ -134,7 +134,11 @@ export async function runUpdate(installDir: string, deps?: Partial<UpdateDeps>):
       try {
         await configureBazarrProviderHub({
           apiKey: state.api_keys["bazarr"] ?? "",
-          flaresolverrUrl: "http://flaresolverr:8191/v1",
+          // Only point the opensubtitles provider at FlareSolverr when it's
+          // actually deployed; a legacy install can have bazarr without it.
+          flaresolverrUrl: state.services_enabled.includes("flaresolverr")
+            ? "http://flaresolverr:8191/v1"
+            : "",
           log: (m) => logAndEcho(`[update]   ${m}`),
         });
       } catch (err) {

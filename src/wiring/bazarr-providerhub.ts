@@ -1,4 +1,5 @@
-import { withRetry } from "../lib/retry.js";
+import { fetchWithRetry } from "../lib/retry.js";
+import { waitForBazarrApiReady } from "./bazarr.js";
 
 // Bazarr+ 2.4.0 loads subtitle providers from the Provider Hub (the built-in
 // providers are being retired). This wires the installer's default set via the
@@ -33,6 +34,8 @@ export interface ProviderHubOptions {
   base?: string;
   pollTimeoutMs?: number;
   pollIntervalMs?: number;
+  readyTimeoutMs?: number;
+  readyIntervalMs?: number;
   log?: (msg: string) => void;
 }
 
@@ -40,6 +43,10 @@ interface CatalogEntry {
   provider_id?: string;
   manifest?: unknown;
 }
+
+// Per-request timeout so a wedged Bazarr+ (accepts the socket but never answers)
+// cannot hang an unattended install/update. Bun's fetch has no default timeout.
+const REQ_TIMEOUT_MS = 15_000;
 
 export async function configureBazarrProviderHub(opts: ProviderHubOptions): Promise<void> {
   const base = opts.base ?? "http://localhost:6767";
@@ -49,11 +56,19 @@ export async function configureBazarrProviderHub(opts: ProviderHubOptions): Prom
   const intervalMs = opts.pollIntervalMs ?? 3000;
   const targets = providerHubTargets(opts.flaresolverrUrl);
 
-  // withRetry doubles as the readiness gate: the first catalog GET retries while
-  // Bazarr+ finishes booting (connection refused / 500 during DB migrations).
-  const catRes = await withRetry(() =>
-    fetch(`${base}/api/provider-hub/catalog`, { headers }),
-  );
+  // Readiness gate: after `up` (especially on update) Bazarr+ answers /ping and
+  // /health with 200 while its DB migrations still 500 the real API for 30-60s.
+  // Poll the authenticated /api/system/status until it is truly live before
+  // touching the Provider Hub, otherwise every install below silently no-ops.
+  await waitForBazarrApiReady(base, opts.apiKey, opts.readyTimeoutMs, opts.readyIntervalMs);
+
+  // fetchWithRetry forgives a transient 500/401 (plain fetch resolves on 500 and
+  // would not be retried); still check .ok before parsing the body.
+  const catRes = await fetchWithRetry(`${base}/api/provider-hub/catalog`, {
+    headers,
+    signal: AbortSignal.timeout(REQ_TIMEOUT_MS),
+  });
+  if (!catRes.ok) throw new Error(`catalog returned ${catRes.status}`);
   const catalog = (await catRes.json()) as { entries?: CatalogEntry[] };
   const manifestById = new Map<string, unknown>();
   for (const e of catalog.entries ?? []) {
@@ -72,6 +87,7 @@ export async function configureBazarrProviderHub(opts: ProviderHubOptions): Prom
           method: "POST",
           headers,
           body: JSON.stringify({ manifest }),
+          signal: AbortSignal.timeout(REQ_TIMEOUT_MS),
         });
         if (!res.ok) throw new Error(`install returned ${res.status}`);
         await waitForInstalled(base, headers, target.id, timeoutMs, intervalMs);
@@ -80,6 +96,7 @@ export async function configureBazarrProviderHub(opts: ProviderHubOptions): Prom
         method: "PATCH",
         headers,
         body: JSON.stringify({ enabled: true, ...(target.config ? { config: target.config } : {}) }),
+        signal: AbortSignal.timeout(REQ_TIMEOUT_MS),
       });
       if (!patch.ok) throw new Error(`enable returned ${patch.status}`);
       log(`Provider Hub: ${target.id} installed + enabled`);
@@ -96,7 +113,10 @@ async function installedIds(
   base: string,
   headers: Record<string, string>,
 ): Promise<Set<string>> {
-  const r = await fetch(`${base}/api/provider-hub/providers`, { headers });
+  const r = await fetch(`${base}/api/provider-hub/providers`, {
+    headers,
+    signal: AbortSignal.timeout(REQ_TIMEOUT_MS),
+  });
   if (!r.ok) throw new Error(`list providers returned ${r.status}`);
   const j = (await r.json()) as { data?: Array<{ provider_id?: string; id?: string }> };
   return new Set(
@@ -113,7 +133,13 @@ async function waitForInstalled(
 ): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    if ((await installedIds(base, headers)).has(id)) return;
+    try {
+      if ((await installedIds(base, headers)).has(id)) return;
+    } catch {
+      // Transient error while the hub downloads the bundle / builds the venv
+      // (it can 5xx mid-build). Keep polling rather than dropping this provider
+      // on a single blip; the outer timeout still bounds the wait.
+    }
     await new Promise((r) => setTimeout(r, intervalMs));
   }
   throw new Error(`install did not finish within ${Math.round(timeoutMs / 1000)}s`);
