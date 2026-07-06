@@ -289,20 +289,18 @@ describe("healthchecks + deunhealth reboot self-heal", () => {
     expect(qbit.healthcheck!.test).toContain("http://127.0.0.1:8080/");
   });
 
-  test("VPN-routed qBittorrent probes gluetun's control server, not loopback", () => {
-    // A loopback WebUI probe passes even when qbit is orphaned from gluetun's
-    // netns after a reboot (its own 127.0.0.1:8080 still answers), so deunhealth
-    // would never fire. Probing gluetun's control server (127.0.0.1:8000, shared
-    // netns) only succeeds in the LIVE netns, and unlike an external check it
-    // stays healthy during a real tunnel outage (no pointless restart loop).
+  test("VPN-routed qBittorrent probes BOTH gluetun's control server and its own WebUI", () => {
+    // Leg 1 (control server, 8000) catches the reboot orphaned-netns case: a bare
+    // loopback WebUI probe would stay 'healthy' when orphaned (qbit's own 8080
+    // still answers), and it holds during a real tunnel outage. Leg 2 (WebUI,
+    // 8080) catches a hung qbit while gluetun is up. Both must pass to be healthy.
     const opts = { ...baseOpts, vpn: { enabled: true, provider: "mullvad" } };
     const ctx = buildComposeContext(getServices(["gluetun", "qbittorrent"]), opts);
     const qbit = ctx.services.find((s) => s.id === "qbittorrent")!;
     expect(qbit.healthcheck).toBeDefined();
     expect(qbit.healthcheck!.test).toContain("127.0.0.1:8000");
-    // -f omitted so an auth 401 still counts as reachable (only refused fails).
-    expect(qbit.healthcheck!.test).not.toContain("-f");
-    expect(qbit.healthcheck!.test).not.toContain("127.0.0.1:8080");
+    expect(qbit.healthcheck!.test).toContain("127.0.0.1:8080");
+    expect(qbit.healthcheck!.test).toContain("&&"); // both legs required
   });
 
   test("tcp/port-0 catalog health blocks are NOT rendered (caddy, recyclarr)", () => {

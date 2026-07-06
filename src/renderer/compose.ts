@@ -245,9 +245,17 @@ function buildHealthcheck(svc: Service): Healthcheck | undefined {
 // (orphaned netns) fails. curl is used directly (LSIO qbit ships it) since
 // busybox wget can't distinguish a 401 from a refused connection.
 const GLUETUN_CONTROL_URL = "http://127.0.0.1:8000/v1/publicip/ip";
-function buildVpnHealthcheck(): Healthcheck {
+function buildVpnHealthcheck(webuiPort: number): Healthcheck {
+  // Healthy requires BOTH legs. Leg 1 (gluetun's control server) proves qbit is
+  // in gluetun's LIVE netns, catching the reboot orphaned-netns case; no -f, so
+  // an auth 401 still counts as reachable, and it stays green during a real
+  // tunnel outage (the container is up). Leg 2 (qbit's own WebUI) catches a
+  // hung/crashed qbit while gluetun is up, which leg 1 alone would miss; -f so a
+  // non-2xx or timed-out UI fails. Either leg failing -> unhealthy -> deunhealth
+  // restarts qbit.
+  const webui = `http://127.0.0.1:${webuiPort}/`;
   return {
-    test: `["CMD-SHELL", "curl -sS -m 10 -o /dev/null ${GLUETUN_CONTROL_URL} || exit 1"]`,
+    test: `["CMD-SHELL", "curl -sS -m 10 -o /dev/null ${GLUETUN_CONTROL_URL} && curl -fsS -m 10 -o /dev/null ${webui} || exit 1"]`,
     interval: "30s",
     timeout: "10s",
     retries: 3,
@@ -321,7 +329,9 @@ export function buildComposeContext(services: Service[], opts: ComposeOptions): 
     // VPN-routed services need a tunnel-connectivity probe (see buildVpnHealthcheck)
     // so deunhealth can actually detect the reboot orphaned-netns state; a plain
     // loopback probe would pass even when the published port is dead.
-    const healthcheck = vpnNetwork ? buildVpnHealthcheck() : buildHealthcheck(svc);
+    const healthcheck = vpnNetwork
+      ? buildVpnHealthcheck(svc.health?.port ?? 8080)
+      : buildHealthcheck(svc);
 
     // Only qBittorrent is auto-restarted by deunhealth. On a host reboot Docker
     // ignores depends_on ordering, so qbit (network_mode: service:gluetun) can
