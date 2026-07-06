@@ -19,10 +19,11 @@ async function readBody(res: Response): Promise<string> {
 // during the first 30-60s often 500 while the DB migrations finish loading.
 // Poll an authenticated endpoint until it returns 200; that is the real signal
 // that the app + db + our config.yaml (with its apikey) are fully live.
-async function waitForBazarrApiReady(
+export async function waitForBazarrApiReady(
   base: string,
   apiKey: string,
   timeoutMs = 120_000,
+  intervalMs = 2000,
 ): Promise<void> {
   const start = Date.now();
   let lastStatus = 0;
@@ -35,7 +36,7 @@ async function waitForBazarrApiReady(
       if (r.ok) return;
       lastStatus = r.status;
     } catch { /* retry */ }
-    await new Promise((r) => setTimeout(r, 2000));
+    await new Promise((r) => setTimeout(r, intervalMs));
   }
   throw new Error(
     `Bazarr API did not accept the configured key within ${timeoutMs / 1000}s ` +

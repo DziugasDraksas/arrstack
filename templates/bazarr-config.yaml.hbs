@@ -23,7 +23,6 @@ general:
   - opensubtitlescom
   - opensubtitles
   - embeddedsubtitles
-  - podnapisi
   - addic7ed
   - yifysubtitles
   flask_secret_key: {{flaskSecretKey}}
@@ -54,11 +53,6 @@ general:
   utf8_encode: true
   wanted_search_frequency: 6
   wanted_search_frequency_movie: 6
-opensubtitles:
-  scraper_service_url: opensubtitles-scraper:8000
-  use_web_scraper: true
-  ssl: false
-  timeout: 15
 sonarr:
   apikey: '{{sonarrApiKey}}'
   base_url: '/'

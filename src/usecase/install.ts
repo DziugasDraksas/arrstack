@@ -38,6 +38,7 @@ import { isNordVpnToken, resolveVpnWireguardKey } from "../wiring/nordvpn.js";
 import { setupJellyfin } from "../wiring/jellyfin.js";
 import { linkJellyseerr } from "../wiring/jellyseerr.js";
 import { configureBazarrLanguages } from "../wiring/bazarr.js";
+import { configureBazarrProviderHub } from "../wiring/bazarr-providerhub.js";
 import { runRecyclarrSync } from "../wiring/recyclarr.js";
 
 export type StepStatus = "pending" | "running" | "done" | "failed";
@@ -536,6 +537,25 @@ export async function runInstall(
         apiKey: apiKeys["bazarr"] ?? "",
         languages: state.subtitle_languages,
       });
+    });
+  }
+
+  // Step 12b2b: Install + enable the default subtitle providers via the Bazarr+
+  // Provider Hub (the built-in providers are being retired). Best-effort: a
+  // provider that fails to install just logs a warning and never aborts install.
+  if (has("bazarr")) {
+    await runStep("Installing Bazarr subtitle providers (Provider Hub)", onStep, log, async () => {
+      try {
+        await configureBazarrProviderHub({
+          apiKey: apiKeys["bazarr"] ?? "",
+          // Only point the opensubtitles provider at FlareSolverr when it's
+          // actually deployed; a legacy install can have bazarr without it.
+          flaresolverrUrl: has("flaresolverr") ? "http://flaresolverr:8191/v1" : "",
+          log: (m) => log.info("provider-hub", m),
+        });
+      } catch (err) {
+        log.warn("provider-hub", `skipped: ${(err as Error).message}`);
+      }
     });
   }
 

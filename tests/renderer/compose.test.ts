@@ -39,6 +39,15 @@ describe("renderCompose", () => {
     expect(output).toContain("max-file");
   });
 
+  test("opensubtitles-scraper is gone; bazarr no longer depends on it", () => {
+    const output = renderCompose(getServices(["bazarr", "flaresolverr"]), baseOpts);
+    expect(output).not.toContain("opensubtitles-scraper");
+    expect(output).not.toContain("OPENSUBTITLES_SCRAPER_URL");
+    const ctx = buildComposeContext(getServices(["bazarr"]), baseOpts);
+    const bazarr = ctx.services.find((s) => s.id === "bazarr")!;
+    expect(bazarr.dependsOn.map((d) => d.service)).not.toContain("opensubtitles-scraper");
+  });
+
   test("arrstack network is defined", () => {
     const services = getServices(["sonarr"]);
     const output = renderCompose(services, baseOpts);

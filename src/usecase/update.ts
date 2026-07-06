@@ -8,6 +8,7 @@ import type { State } from "../state/schema.js";
 import { renderCaddyfile } from "../renderer/caddy.js";
 import { renderCompose } from "../renderer/compose.js";
 import { resolveVpnWireguardKey } from "../wiring/nordvpn.js";
+import { configureBazarrProviderHub } from "../wiring/bazarr-providerhub.js";
 
 export interface UpdateDeps {
   runStreaming: (argv: string[], onLine: (line: string) => void) => Promise<{ ok: boolean; code: number | null }>;
@@ -124,6 +125,26 @@ export async function runUpdate(installDir: string, deps?: Partial<UpdateDeps>):
     const services = getServicesByIds(state.services_enabled);
     await runHealthChecks(services, d.checkHealth, logAndEcho);
     phaseTimes["health"] = d.now() - healthStart;
+
+    // Provider Hub: keep the default subtitle providers installed + enabled on
+    // existing installs too (the built-in providers are being retired).
+    // Best-effort: a failure here logs a warning and never fails the update.
+    if (state.services_enabled.includes("bazarr")) {
+      logAndEcho("[update] Provider Hub: ensuring default subtitle providers");
+      try {
+        await configureBazarrProviderHub({
+          apiKey: state.api_keys["bazarr"] ?? "",
+          // Only point the opensubtitles provider at FlareSolverr when it's
+          // actually deployed; a legacy install can have bazarr without it.
+          flaresolverrUrl: state.services_enabled.includes("flaresolverr")
+            ? "http://flaresolverr:8191/v1"
+            : "",
+          log: (m) => logAndEcho(`[update]   ${m}`),
+        });
+      } catch (err) {
+        logAndEcho(`[update]   Provider Hub wiring skipped: ${(err as Error).message}`);
+      }
+    }
 
     const captureAfterStart = d.now();
     const after = await d.captureImages(composeFile);

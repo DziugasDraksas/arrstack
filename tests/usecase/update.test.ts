@@ -190,6 +190,28 @@ test("runUpdate does not re-add deunhealth when it's already in services_enabled
   expect(logTxt).not.toContain("adding deunhealth sidecar");
 });
 
+test("runUpdate attempts the Bazarr Provider Hub wiring when bazarr is enabled", async () => {
+  const dir = makeInstallDir(true, false);
+  writeState(dir, { ...VALID_STATE, install_dir: dir, services_enabled: ["sonarr", "bazarr", "flaresolverr"] });
+  const origFetch = globalThis.fetch;
+  // Fake a reachable-but-empty Provider Hub so the wiring runs fast instead of
+  // backing off (withRetry) against an unreachable Bazarr+.
+  globalThis.fetch = (async (url: any) => {
+    const u = String(url);
+    if (u.endsWith("/provider-hub/catalog")) return new Response(JSON.stringify({ entries: [] }), { status: 200 });
+    if (u.endsWith("/provider-hub/providers")) return new Response(JSON.stringify({ data: [] }), { status: 200 });
+    return new Response("{}", { status: 200 });
+  }) as any;
+  try {
+    const { deps } = makeDeps();
+    await silently(() => runUpdate(dir, deps));
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+  const logTxt = readFileSync(join(dir, "update.log"), "utf-8");
+  expect(logTxt.toLowerCase()).toContain("provider hub");
+});
+
 test("runUpdate summary reports changed service images", async () => {
   const dir = makeInstallDir();
   let captureCount = 0;
